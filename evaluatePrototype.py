@@ -66,10 +66,7 @@ def get_ground_truth(video_file, args):
     return bounce_list
 
 def evaluate(bounce_list, bounce_gt_list, args):
-    num_tp = 0
-    num_fp = 0
-    num_tn = 0
-    num_fn = 0
+    num_tp, num_fp, num_tn, num_fn = 0, 0, 0, 0
 
     if len(bounce_list) != len(bounce_gt_list):
         print('Error: lengths of bounce list and ground truth list are different')
@@ -90,6 +87,55 @@ def evaluate(bounce_list, bounce_gt_list, args):
     return num_tp, num_fp, num_tn, num_fn
 
 def main(args):
+    # algorithm parameters
+
+    # bounce detection parameters
+    bounce_threshold = 0.45
+    distance_threshold = 80
+
+    # ball tracking parameters
+    binary_threshold = 127
+    hough_min_dist = 1
+    hough_param1 = 50
+    hough_param2 = 2
+    hough_min_radius = 2 
+    hough_max_radius = 7
+
+    # open the INI file containing the parameters, and update each parameter if it is present in the file
+    if args.file_params:
+        with open(args.file_params, 'r') as file:
+            lines = file.readlines()
+            for line in lines:
+                line = line.strip()
+                # remove everything in `line' after the first comment character
+                line = line.split('#')[0]
+                line = line.split(';')[0]
+                line = line.split('[')[0]
+                if len(line) == 0:
+                    continue
+                parts = line.split('=')
+                if len(parts) != 2:
+                    continue
+                key = parts[0].strip()
+                value = parts[1].strip()
+                if key == 'bounce_threshold':
+                    bounce_threshold = float(value)
+                elif key == 'distance_threshold':
+                    distance_threshold = int(value)
+                elif key == 'binary_threshold':
+                    binary_threshold = int(value)
+                elif key == 'hough_min_dist':
+                    hough_min_dist = int(value)
+                elif key == 'hough_param1':
+                    hough_param1 = int(value)
+                elif key == 'hough_param2':
+                    hough_param2 = int(value)
+                elif key == 'hough_min_radius':
+                    hough_min_radius = int(value)
+                elif key == 'hough_max_radius':
+                    hough_max_radius = int(value) 
+
+
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print("Running models on device: {}".format(device))
 
@@ -106,10 +152,7 @@ def main(args):
     # Create a list to store the results
     results = []
 
-    sum_tp = 0
-    sum_fp = 0
-    sum_tn = 0
-    sum_fn = 0
+    sum_tp, sum_fp, sum_tn, sum_fn = 0, 0, 0, 0
 
     # check to see if the file exists
     if not os.path.exists(args.file_input_video_list):
@@ -123,6 +166,7 @@ def main(args):
             if video_file.startswith('#'):
                 continue
             if video_file.endswith('.mp4'):
+                print("Processing video file: {}".format(video_file))
                 bounce_list = run_detection(args.path_input_video_folder + '/' + video_file, ball_detector, bounce_detector, path_output_folder, args)
                 bounce_gt_list = get_ground_truth(args.path_input_video_folder + '/' + video_file, args)
                 num_tp, num_fp, num_tn, num_fn = evaluate(bounce_list, bounce_gt_list, args)
@@ -195,6 +239,7 @@ if __name__ == '__main__':
     parser.add_argument('--path_input_video_folder', type=str, help='path to folder containing input videos')
     parser.add_argument('--file_input_video_list', type=str, help='list file of input videos')
     parser.add_argument('--path_output_folder', type=str, help='path to output folder')
+    parser.add_argument('--file_params', type=str, help='INI-style file containing parameters for the pipeline')
     args = parser.parse_args()
 
     main(args)

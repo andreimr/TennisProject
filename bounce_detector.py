@@ -5,9 +5,18 @@ from scipy.interpolate import CubicSpline
 from scipy.spatial import distance
 
 class BounceDetector:
-    def __init__(self, path_model=None):
+    def __init__(self, path_model=None, bounce_threshold=0.45, distance_threshold=80):
+        """
+        Initializes the BounceDetector object.
+        Parameters:
+        - path_model (str): The path to the model file. If provided, the model will be loaded from the specified path.
+        - bounce_threshold (float): The threshold value for detecting bounces. Default is 0.45.
+        - distance_threshold (int): The threshold distance for rejecting an extrapolated point. Default is 80.
+        """
+
         self.model = ctb.CatBoostRegressor()
-        self.threshold = 0.45
+        self.bounce_threshold = bounce_threshold
+        self.distance_threshold = distance_threshold
         if path_model:
             self.load_model(path_model)
         
@@ -52,7 +61,7 @@ class BounceDetector:
             x_ball, y_ball = self.smooth_predictions(x_ball, y_ball)
         features, num_frames = self.prepare_features(x_ball, y_ball)
         preds = self.model.predict(features)
-        ind_bounce = np.where(preds > self.threshold)[0]
+        ind_bounce = np.where(preds > self.bounce_threshold)[0]
         if len(ind_bounce) > 0:
             ind_bounce = self.postprocess(ind_bounce, preds)
         frames_bounce = [num_frames[x] for x in ind_bounce]
@@ -60,7 +69,7 @@ class BounceDetector:
     
     def smooth_predictions(self, x_ball, y_ball):
         is_none = [int(x is None) for x in x_ball]
-        interp = 5
+        interp = 5 # I may wish to turn this into a parameter too
         counter = 0
         for num in range(interp, len(x_ball)-1):
             if not x_ball[num] and sum(is_none[num-interp:num]) == 0 and counter < 3:
@@ -70,7 +79,7 @@ class BounceDetector:
                 is_none[num] = 0
                 if x_ball[num+1]:
                     dist = distance.euclidean((x_ext, y_ext), (x_ball[num+1], y_ball[num+1]))
-                    if dist > 80:
+                    if dist > self.distance_threshold:
                         x_ball[num+1], y_ball[num+1], is_none[num+1] = None, None, 1
                 counter += 1
             else:
