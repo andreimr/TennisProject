@@ -22,7 +22,7 @@ def read_video(path_video):
     return frames, fps
 
 
-def run_detection(video_file, ball_detector, bounce_detector, path_output_folder, args):
+def run_detection(path_to_video_file, video_file, ball_detector, bounce_detector):
     """
     Run the detection process on a video file.
 
@@ -36,12 +36,13 @@ def run_detection(video_file, ball_detector, bounce_detector, path_output_folder
     Returns:
     - bounce_list (list): A list of integers, where 1 (0) represents the presence (absence) of a bounce in each frame.
     """
+    video_filepath = path_to_video_file + '/' + video_file
 
     # Read the video file
-    frames, fps = read_video(video_file)
+    frames, fps = read_video(video_filepath)
 
     # Run the detection process
-    ball_track = ball_detector.infer_model(frames)
+    ball_track = ball_detector.infer_model(frames, video_file)
 
     # Predict bounces
     x_ball = [x[0] for x in ball_track]
@@ -87,11 +88,12 @@ def evaluate(bounce_list, bounce_gt_list, args):
     return num_tp, num_fp, num_tn, num_fn
 
 def main(args):
-    # algorithm parameters
+    # debug mode?
+    debug_mode = args.debug
+    if debug_mode:
+        print('Running in debug mode')
 
-    # bounce detection parameters
-    bounce_threshold = 0.45
-    distance_threshold = 80
+    # algorithm parameters
 
     # ball tracking parameters
     binary_threshold = 127
@@ -101,9 +103,14 @@ def main(args):
     hough_min_radius = 2 
     hough_max_radius = 7
 
+    # bounce detection parameters
+    bounce_threshold = 0.45
+    distance_threshold = 80
+
+
     # open the INI file containing the parameters, and update each parameter if it is present in the file
-    if args.file_params:
-        with open(args.file_params, 'r') as file:
+    if args.param_file:
+        with open(args.param_file, 'r') as file:
             lines = file.readlines()
             for line in lines:
                 line = line.strip()
@@ -118,11 +125,7 @@ def main(args):
                     continue
                 key = parts[0].strip()
                 value = parts[1].strip()
-                if key == 'bounce_threshold':
-                    bounce_threshold = float(value)
-                elif key == 'distance_threshold':
-                    distance_threshold = int(value)
-                elif key == 'binary_threshold':
+                if key == 'binary_threshold':
                     binary_threshold = int(value)
                 elif key == 'hough_min_dist':
                     hough_min_dist = int(value)
@@ -134,20 +137,36 @@ def main(args):
                     hough_min_radius = int(value)
                 elif key == 'hough_max_radius':
                     hough_max_radius = int(value) 
+                elif key == 'bounce_threshold':
+                    bounce_threshold = float(value)
+                elif key == 'distance_threshold':
+                    distance_threshold = int(value)
 
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print("Running models on device: {}".format(device))
 
-    print('load ball tracking model {}'.format(args.path_ball_track_model))
-    ball_detector = BallDetector(args.path_ball_track_model, device)
-    print('load bounce detection model {}'.format(args.path_bounce_model))
-    bounce_detector = BounceDetector(args.path_bounce_model)
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path_output_folder = args.path_output_folder + '/' + timestamp + '/'
     print('output folder: {}'.format(path_output_folder))
     os.mkdir(path_output_folder)
+
+    print('load ball tracking model {}'.format(args.path_ball_track_model))
+    ball_detector = BallDetector(args.path_ball_track_model, 
+                                 device, 
+                                 distance_threshold,
+                                 binary_threshold, 
+                                 hough_min_dist, 
+                                 hough_param1, 
+                                 hough_param2, 
+                                 hough_min_radius, 
+                                 hough_max_radius,
+                                 debug_mode,
+                                 path_output_folder)
+    print('load bounce detection model {}'.format(args.path_bounce_model))
+    bounce_detector = BounceDetector(args.path_bounce_model,
+                                     bounce_threshold,
+                                     distance_threshold)
 
     # Create a list to store the results
     results = []
@@ -167,7 +186,9 @@ def main(args):
                 continue
             if video_file.endswith('.mp4'):
                 print("Processing video file: {}".format(video_file))
-                bounce_list = run_detection(args.path_input_video_folder + '/' + video_file, ball_detector, bounce_detector, path_output_folder, args)
+                bounce_list = run_detection(args.path_input_video_folder, video_file, 
+                                            ball_detector, 
+                                            bounce_detector)
                 bounce_gt_list = get_ground_truth(args.path_input_video_folder + '/' + video_file, args)
                 num_tp, num_fp, num_tn, num_fn = evaluate(bounce_list, bounce_gt_list, args)
                 sum_tp += num_tp
@@ -239,7 +260,8 @@ if __name__ == '__main__':
     parser.add_argument('--path_input_video_folder', type=str, help='path to folder containing input videos')
     parser.add_argument('--file_input_video_list', type=str, help='list file of input videos')
     parser.add_argument('--path_output_folder', type=str, help='path to output folder')
-    parser.add_argument('--file_params', type=str, help='INI-style file containing parameters for the pipeline')
+    parser.add_argument('--param_file', type=str, help='INI-style file containing parameters for the pipeline')
+    parser.add_argument('--debug', action='store_true', help='debug flag')
     args = parser.parse_args()
 
     main(args)

@@ -17,8 +17,15 @@ class BounceDetector:
         self.model = ctb.CatBoostRegressor()
         self.bounce_threshold = bounce_threshold
         self.distance_threshold = distance_threshold
+
         if path_model:
             self.load_model(path_model)
+
+        print('BounceDetector: initialized.')
+        print('BounceDetector: using bounce threshold =', self.bounce_threshold)
+        print('BounceDetector: using distance threshold =', self.distance_threshold)
+        print('BounceDetector: using model {}.'.format(path_model))
+
         
     def load_model(self, path_model):
         self.model.load_model(path_model)

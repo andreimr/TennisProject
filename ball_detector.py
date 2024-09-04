@@ -14,7 +14,9 @@ class BallDetector:
                  hough_param1=50, 
                  hough_param2=2, 
                  hough_min_radius=2, 
-                 hough_max_radius=7):
+                 hough_max_radius=7,
+                 debug_mode=False,
+                 path_output_folder=None):
         """
         Initializes the BallDetector object.
         Args:
@@ -41,6 +43,8 @@ class BallDetector:
         self.hough_param2 = hough_param2
         self.hough_min_radius = hough_min_radius
         self.hough_max_radius = hough_max_radius    
+        self.debug_mode = debug_mode
+        self.path_output_folder = path_output_folder
 
         self.model = BallTrackerNet(input_channels=9, out_channels=256)
         if path_model:
@@ -54,7 +58,22 @@ class BallDetector:
         # scaling factor for the detected ball points
         self.scale = 2
 
-    def infer_model(self, frames):
+        print('BallDetector: initialized.')
+        print('BallDetector: using device {}.'.format(device))
+        print('BallDetector: using max distance = {}.'.format(max_dist))
+        print('BallDetector: using binary threshold = {}.'.format(binary_threshold))
+        print('BallDetector: using Hough min distance = {}.'.format(hough_min_dist))
+        print('BallDetector: using Hough param1 = {}.'.format(hough_param1))
+        print('BallDetector: using Hough param2 = {}.'.format(hough_param2))
+        print('BallDetector: using Hough min radius = {}.'.format(hough_min_radius))
+        print('BallDetector: using Hough max radius = {}.'.format(hough_max_radius))
+        print('BallDetector: using model {}.'.format(path_model))
+        if debug_mode:
+            print('BallDetector: using debug mode.')
+            print('BallDetector: saving frames to {}. Frame indexing starts at 1, to match up with line numbers of output text files.'.format(path_output_folder))
+
+
+    def infer_model(self, frames, video_file):
         """ Run pretrained model on a consecutive list of frames
         :params
             frames: list of consecutive video frames
@@ -75,12 +94,13 @@ class BallDetector:
 
             out = self.model(torch.from_numpy(inp).float().to(self.device))
             feature_map = out.argmax(dim=1).detach().cpu().numpy()
-            x_pred, y_pred = self.postprocess(feature_map, prev_pred)
+            x_pred, y_pred = self.postprocess(feature_map, prev_pred, video_file, num, img)
             prev_pred = [x_pred, y_pred]
             ball_track.append((x_pred, y_pred))
+
         return ball_track
 
-    def postprocess(self, feature_map, prev_pred):
+    def postprocess(self, feature_map, prev_pred, video_file, num, original_frame):
         """
         :params
             feature_map: feature map with shape (1,360,640)
@@ -113,6 +133,12 @@ class BallDetector:
                                    maxRadius=self.hough_max_radius)
         
         # Choose a circle having its centre within distance `max_dist` from the previous prediction.
+
+        if self.debug_mode:
+            # blend the feature map with the heatmap for debugging
+            dbg_heatmap = cv2.applyColorMap(feature_map, cv2.COLORMAP_CIVIDIS)
+            dbg_map = cv2.addWeighted(original_frame, 0.25, dbg_heatmap, 0.75, 0)
+
         x, y = None, None
         if circles is not None:
             if prev_pred[0]:
@@ -126,4 +152,12 @@ class BallDetector:
             else:
                 x = circles[0][0][0]*self.scale
                 y = circles[0][0][1]*self.scale
+            
+            if self.debug_mode and x and y:
+                cv2.circle(dbg_map, (int(x/self.scale), int(y/self.scale)), 5, (64, 64, 255), 1)
+
+        if self.debug_mode:
+            debug_image_filename = self.path_output_folder + '/' + video_file.split('.mp4')[0] + '_dbg_' + str(num + 1) + '.jpg'
+            cv2.imwrite(debug_image_filename, dbg_map)
+
         return x, y
