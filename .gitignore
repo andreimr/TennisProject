@@ -1,2 +1,4 @@
 out_temp/*.mp4
 __pycache__/
+out_withlabels/*
+param_defaults2.ini

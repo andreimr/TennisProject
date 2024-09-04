@@ -7,8 +7,12 @@ from person_detector import PersonDetector
 from ball_detector import BallDetector
 from utils import scene_detect
 from homography import is_pt_inside_court
+from datetime import datetime
+import os
+import pandas as pd
 import argparse
 import torch
+
 
 def read_video(path_video):
     cap = cv2.VideoCapture(path_video)
@@ -23,6 +27,7 @@ def read_video(path_video):
     cap.release()
     return frames, fps
 
+
 def get_court_img():
     court_reference = CourtReference()
     court = court_reference.build_court_reference()
@@ -30,8 +35,49 @@ def get_court_img():
     court_img = (np.stack((court, court, court), axis=2)*255).astype(np.uint8)
     return court_img
 
-def main(frames, scenes, bounces, ball_track, homography_matrices, kps_court, persons_top, persons_bottom,
-         draw_trace=False, trace=7):
+
+def get_ground_truth(video_file, args):
+    file_gt = video_file.replace('.mp4', '_out.txt')
+    with open(file_gt, 'r') as file:
+        lines = file.readlines()
+        bounce_list = []
+        for line in lines:
+            line = line.strip()
+            if line.startswith('#'):
+                continue
+            parts = line[0]
+            bounce_list.append(int(parts))
+    return bounce_list
+
+
+def evaluate(bounce_list, bounce_gt_list, args):
+    num_tp, num_fp, num_tn, num_fn = 0, 0, 0, 0
+    FP_frames, FN_frames = [], []
+
+    if len(bounce_list) != len(bounce_gt_list):
+        print('Error: lengths of bounce list and ground truth list are different')
+        return num_tp, num_fp, num_tn, num_fn, [], []
+    
+    for i in range(min(len(bounce_list), len(bounce_gt_list))):
+        if bounce_list[i] == bounce_gt_list[i]:
+            if bounce_list[i] == 1:
+                num_tp += 1
+            else:
+                num_tn += 1
+        else:
+            if bounce_list[i] == 1:
+                num_fp += 1
+                FP_frames.append(i)
+            else:
+                num_fn += 1
+                FN_frames.append(i)
+
+    return num_tp, num_fp, num_tn, num_fn, FP_frames, FN_frames
+
+
+# MODIFICATION
+def run_detection(frames, scenes, bounces, ball_track, homography_matrices, kps_court, 
+         draw_trace=False, trace=7, reject_bounces_outside_court=False):
     """
     :params
         frames: list of original images
@@ -105,30 +151,16 @@ def main(frames, scenes, bounces, ball_track, homography_matrices, kps_court, pe
 
                     # MODIFICATION
                     # check if the bounce is inside the court
-                    if is_pt_inside_court(ball_point[0, 0]):
+                    if not reject_bounces_outside_court or is_pt_inside_court(ball_point[0, 0]):
                         # draw bounce in the minimap
                         court_img = cv2.circle(court_img, (int(ball_point[0, 0, 0]), int(ball_point[0, 0, 1])),
                                                         radius=0, color=(0, 255, 255), thickness=50)
                         # add this frame ID to the set of filtered bounces
                         filtered_bounces.add(i)
 
+                # (removed person rendering)
+
                 minimap = court_img.copy()
-
-                # draw persons
-                persons = persons_top[i] + persons_bottom[i]                    
-                for j, person in enumerate(persons):
-                    if len(person[0]) > 0:
-                        person_bbox = list(person[0])
-                        img_res = cv2.rectangle(img_res, (int(person_bbox[0]), int(person_bbox[1])),
-                                                (int(person_bbox[2]), int(person_bbox[3])), [255, 0, 0], 2)
-
-                        # transmit person point to minimap
-                        person_point = list(person[1])
-                        person_point = np.array(person_point, dtype=np.float32).reshape(1, 1, 2)
-                        person_point = cv2.perspectiveTransform(person_point, inv_mat)
-                        minimap = cv2.circle(minimap, (int(person_point[0, 0, 0]), int(person_point[0, 0, 1])),
-                                                           radius=0, color=(255, 0, 0), thickness=80)
-
                 minimap = cv2.resize(minimap, (width_minimap, height_minimap))
                 img_res[30:(30 + height_minimap), (width - 30 - width_minimap):(width - 30), :] = minimap
                 imgs_res.append(img_res)
@@ -137,6 +169,7 @@ def main(frames, scenes, bounces, ball_track, homography_matrices, kps_court, pe
             imgs_res = imgs_res + frames[scenes[num_scene][0]:scenes[num_scene][1]] 
     return imgs_res, filtered_bounces        
  
+
 def write(imgs_res, fps, path_output_video):
     height, width = imgs_res[0].shape[:2]
     out = cv2.VideoWriter(path_output_video, cv2.VideoWriter_fourcc(*'DIVX'), fps, (width, height))
@@ -146,55 +179,237 @@ def write(imgs_res, fps, path_output_video):
     out.release()    
 
 
+
+
+def run_trial(path_to_video_file, video_file, ball_detector, bounce_detector, court_detector, reject_bounces_outside_court):
+    video_filepath = path_to_video_file + '/' + video_file
+
+    # Read the video file
+    frames, fps = read_video(video_filepath)
+    scenes = scene_detect(video_filepath)    
+
+    print('ball detection')
+    ball_track = ball_detector.infer_model(frames, video_file=video_filepath.split('/')[-1])
+
+    print('court detection')
+    homography_matrices, kps_court = court_detector.infer_model(frames)
+
+#   No utility for this prototype
+#    print('person detection')
+#    persons_top, persons_bottom = person_detector.track_players(frames, homography_matrices, filter_players=False)
+
+    # bounce detection
+    x_ball = [x[0] for x in ball_track]
+    y_ball = [x[1] for x in ball_track]
+    bounces = bounce_detector.predict(x_ball, y_ball)
+
+    imgs_res, filtered_bounces = run_detection(frames, scenes, bounces, ball_track, homography_matrices, kps_court,
+                    draw_trace=True, reject_bounces_outside_court=reject_bounces_outside_court)
+
+    # Generate a list corresponding to each frame, where 1 (0) represents the presence (absence) of a bounce in the frame    
+    bounce_list = [1 if i in filtered_bounces else 0 for i in range(len(frames))]
+    return imgs_res, fps, bounce_list
+
+
+def main(args):
+    # debug mode?
+    debug_mode = args.debug
+    if debug_mode:
+        print('Running in debug mode')
+
+    # algorithm parameters
+
+    # ball tracking parameters
+    binary_threshold = 127
+    hough_min_dist = 1
+    hough_param1 = 50
+    hough_param2 = 2
+    hough_min_radius = 2 
+    hough_max_radius = 7
+
+    # bounce detection parameters
+    bounce_threshold = 0.45
+    distance_threshold = 80
+    reject_bounces_outside_court = True
+
+
+    # open the INI file containing the parameters, and update each parameter if it is present in the file
+    if args.param_file:
+        with open(args.param_file, 'r') as file:
+            lines = file.readlines()
+            for line in lines:
+                line = line.strip()
+                # remove everything in `line' after the first comment character
+                line = line.split('#')[0]
+                line = line.split(';')[0]
+                line = line.split('[')[0]
+                if len(line) == 0:
+                    continue
+                parts = line.split('=')
+                if len(parts) != 2:
+                    continue
+                key = parts[0].strip()
+                value = parts[1].strip()
+                if key == 'binary_threshold':
+                    binary_threshold = int(value)
+                elif key == 'hough_min_dist':
+                    hough_min_dist = int(value)
+                elif key == 'hough_param1':
+                    hough_param1 = int(value)
+                elif key == 'hough_param2':
+                    hough_param2 = int(value)
+                elif key == 'hough_min_radius':
+                    hough_min_radius = int(value)
+                elif key == 'hough_max_radius':
+                    hough_max_radius = int(value) 
+                elif key == 'bounce_threshold':
+                    bounce_threshold = float(value)
+                elif key == 'distance_threshold':
+                    distance_threshold = int(value)
+                elif key == 'reject_bounces_outside_court':
+                    reject_bounces_outside_court = bool(value)
+
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print("Running models on device: {}".format(device))
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path_output_folder = args.path_output_folder + '/' + timestamp + '/'
+    print('output folder: {}'.format(path_output_folder))
+    os.mkdir(path_output_folder)
+
+    print('load ball tracking model {}'.format(args.path_ball_track_model))
+    ball_detector = BallDetector(args.path_ball_track_model, 
+                                 device, 
+                                 distance_threshold,
+                                 binary_threshold, 
+                                 hough_min_dist, 
+                                 hough_param1, 
+                                 hough_param2, 
+                                 hough_min_radius, 
+                                 hough_max_radius,
+                                 debug_mode,
+                                 path_output_folder)
+    print('load bounce detection model {}'.format(args.path_bounce_model))
+    bounce_detector = BounceDetector(args.path_bounce_model,
+                                     bounce_threshold,
+                                     distance_threshold)
+    
+    print('load court detection model {}'.format(args.path_court_model))
+    court_detector = CourtDetectorNet(args.path_court_model, 
+                                      device)
+
+    # Create a list to store the results
+    results = []
+
+    sum_tp, sum_fp, sum_tn, sum_fn = 0, 0, 0, 0
+    FP_frames, FN_frames = [], []
+
+    # check to see if the file exists
+    if not os.path.exists(args.file_input_video_list):
+        print('Video file list {} does not exist'.format(args.file_input_video_list))
+        return
+
+    with open(args.file_input_video_list, 'r') as file_list:
+        lines = file_list.readlines()
+        for line in lines:
+            video_file = line.strip()
+            if video_file.startswith('#'):
+                continue
+            if video_file.endswith('.mp4'):
+
+                ## RUN TRIAL
+                print("Processing video file: {}".format(video_file))
+                imgs_res, fps, bounce_list = run_trial(args.path_input_video_folder, video_file, 
+                                            ball_detector, 
+                                            bounce_detector,
+                                            court_detector,
+                                            reject_bounces_outside_court=reject_bounces_outside_court)
+                
+                ## EVALUATE RESULT
+                bounce_gt_list = get_ground_truth(args.path_input_video_folder + '/' + video_file, args)
+                num_tp, num_fp, num_tn, num_fn, FP_frames, FN_frames = evaluate(bounce_list, bounce_gt_list, args)
+                sum_tp += num_tp
+                sum_fp += num_fp
+                sum_tn += num_tn
+                sum_fn += num_fn
+
+                # write the resulting images to a video file
+                output_video_file = path_output_folder + video_file.replace('.mp4', '_output.mp4')
+                write(imgs_res, fps, output_video_file)
+
+                # save the `bounce_list` to a file
+                with open(path_output_folder + video_file.replace('.mp4', '_predict.txt'), 'w') as file_out:
+                    for bounce in bounce_list:
+                        file_out.write(str(bounce) + '\n')
+
+                # Calculate precision, recall, and F1 score
+                if num_tp + num_fp == 0:
+                    precision = 0
+                else:
+                    precision = num_tp / (num_tp + num_fp)
+                if num_tp + num_fn == 0:
+                    recall = 0
+                else:
+                    recall = num_tp / (num_tp + num_fn)
+                if precision + recall == 0:
+                    f1_score = 0
+                else:
+                    f1_score = 2 * (precision * recall) / (precision + recall)
+
+                # Append the evaluation results to the list
+                FP_frames_str = '; '.join(map(str, FP_frames))
+                FN_frames_str = '; '.join(map(str, FN_frames))
+                results.append([video_file, num_tp, num_fp, num_tn, num_fn, precision, recall, f1_score, FP_frames_str, FN_frames_str])
+    if len(results) == 0:
+        print('Video file list {} could not be read or had no entries'.format(args.file_input_video_list))
+        return
+
+    # Create a DataFrame from the results list
+    df = pd.DataFrame(results, columns=['video_filename', 'tp', 'fp', 'tn', 'fn', 'precision', 'recall', 'f1_score', 'FP_frames', 'FN_frames'])
+
+    # Calculate the overall precision, recall, and F1 score
+    if sum_tp + sum_fp == 0:
+        overall_precision = 0
+    else:
+        overall_precision = sum_tp / (sum_tp + sum_fp)
+    if sum_tp + sum_fn == 0:
+        overall_recall = 0
+    else:
+        overall_recall = sum_tp / (sum_tp + sum_fn)
+    if overall_precision + overall_recall == 0:
+        overall_f1_score = 0
+    else:
+        overall_f1_score = 2 * (overall_precision * overall_recall) / (overall_precision + overall_recall)
+
+    # Append the overall results to the DataFrame
+    df = df.append({'video_filename': 'Overall', 'tp': sum_tp, 'fp': sum_fp, 'tn': sum_tn, 'fn': sum_fn, 'precision': overall_precision, 'recall': overall_recall, 'f1_score': overall_f1_score, 'FP_frames': 'n/a', 'FN_frames': 'n/a'},  ignore_index=True)
+
+    # Print the overall results
+    print('Overall results:')
+    print('Precision: {:.4f}'.format(overall_precision))
+    print('Recall: {:.4f}'.format(overall_recall))
+    print('F1 Score: {:.4f}'.format(overall_f1_score))
+
+    # Save the DataFrame to an Excel file
+    df.to_excel(path_output_folder + 'results.xlsx', index=False)
+
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--path_ball_track_model', type=str, help='path to pretrained model for ball detection')
     parser.add_argument('--path_court_model', type=str, help='path to pretrained model for court detection')
     parser.add_argument('--path_bounce_model', type=str, help='path to pretrained model for bounce detection')
-    parser.add_argument('--path_input_video', type=str, help='path to input video')
-    parser.add_argument('--path_output_video', type=str, help='path to output video')
+    parser.add_argument('--path_input_video_folder', type=str, help='path to folder containing input videos')
+    parser.add_argument('--file_input_video_list', type=str, help='list file of input videos')
+    parser.add_argument('--path_output_folder', type=str, help='path to output folder')
+    parser.add_argument('--param_file', type=str, help='INI-style file containing parameters for the pipeline')
+    parser.add_argument('--debug', action='store_true', help='debug flag')
     args = parser.parse_args()
-    
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    frames, fps = read_video(args.path_input_video) 
-    scenes = scene_detect(args.path_input_video)    
 
-    print('ball detection')
-    ball_detector = BallDetector(args.path_ball_track_model, device)
-    ball_track = ball_detector.infer_model(frames, video_file=args.path_input_video.split('/')[-1])
-
-    print('court detection')
-    court_detector = CourtDetectorNet(args.path_court_model, device)
-    homography_matrices, kps_court = court_detector.infer_model(frames)
-
-    print('person detection')
-    person_detector = PersonDetector(device)
-    persons_top, persons_bottom = person_detector.track_players(frames, homography_matrices, filter_players=False)
-
-    # bounce detection
-    bounce_detector = BounceDetector(args.path_bounce_model)
-    x_ball = [x[0] for x in ball_track]
-    y_ball = [x[1] for x in ball_track]
-    bounces = bounce_detector.predict(x_ball, y_ball)
-
-    imgs_res, filtered_bounces = main(frames, scenes, bounces, ball_track, homography_matrices, kps_court, persons_top, persons_bottom,
-                    draw_trace=True)
-
-    write(imgs_res, fps, args.path_output_video)
-
-    # generate txt filename comprising the output video name with `_filtered_bounces.txt' as the suffix, in place of the video extension
-    txt_filename = args.path_output_video.split('.')[0] + '_filtered_bounces.txt'
-    
-    # write the labels to the txt file
-    with open(txt_filename, 'w') as f:
-        for i in range(len(frames)):
-            if i in filtered_bounces:
-                f.write('1\n')
-            else:
-                f.write('0\n')
-    print('Output video is saved as', args.path_output_video)
-    print('Labels are saved as', txt_filename)
+    main(args)    
 
 
 

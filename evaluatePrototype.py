@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from bounce_detector import BounceDetector
 from ball_detector import BallDetector
+from court_detection_net import CourtDetectorNet
 import argparse
 import torch
 import pandas as pd
@@ -22,7 +23,7 @@ def read_video(path_video):
     return frames, fps
 
 
-def run_detection(path_to_video_file, video_file, ball_detector, bounce_detector):
+def run_detection(path_to_video_file, video_file, ball_detector, bounce_detector, court_detector):
     """
     Run the detection process on a video file.
 
@@ -30,6 +31,7 @@ def run_detection(path_to_video_file, video_file, ball_detector, bounce_detector
     - video_file (str): The path to the video file.
     - ball_detector (object): The ball detector object.
     - bounce_detector (object): The bounce detector object.
+    - court_detector (object): The court detector object.
     - path_output_folder (str): The path to the output folder.
     - args (dict): Additional arguments.
 
@@ -68,10 +70,11 @@ def get_ground_truth(video_file, args):
 
 def evaluate(bounce_list, bounce_gt_list, args):
     num_tp, num_fp, num_tn, num_fn = 0, 0, 0, 0
+    FP_frames, FN_frames = [], []
 
     if len(bounce_list) != len(bounce_gt_list):
         print('Error: lengths of bounce list and ground truth list are different')
-        return num_tp, num_fp, num_tn, num_fn
+        return num_tp, num_fp, num_tn, num_fn, [], []
     
     for i in range(min(len(bounce_list), len(bounce_gt_list))):
         if bounce_list[i] == bounce_gt_list[i]:
@@ -82,10 +85,12 @@ def evaluate(bounce_list, bounce_gt_list, args):
         else:
             if bounce_list[i] == 1:
                 num_fp += 1
+                FP_frames.append(i)
             else:
                 num_fn += 1
+                FN_frames.append(i)
 
-    return num_tp, num_fp, num_tn, num_fn
+    return num_tp, num_fp, num_tn, num_fn, FP_frames, FN_frames
 
 def main(args):
     # debug mode?
@@ -167,11 +172,16 @@ def main(args):
     bounce_detector = BounceDetector(args.path_bounce_model,
                                      bounce_threshold,
                                      distance_threshold)
+    
+    print('load court detection model {}'.format(args.path_court_model))
+    court_detector = CourtDetectorNet(args.path_court_model, 
+                                      device)
 
     # Create a list to store the results
     results = []
 
     sum_tp, sum_fp, sum_tn, sum_fn = 0, 0, 0, 0
+    FP_frames, FN_frames = [], []
 
     # check to see if the file exists
     if not os.path.exists(args.file_input_video_list):
@@ -188,9 +198,10 @@ def main(args):
                 print("Processing video file: {}".format(video_file))
                 bounce_list = run_detection(args.path_input_video_folder, video_file, 
                                             ball_detector, 
-                                            bounce_detector)
+                                            bounce_detector,
+                                            court_detector)
                 bounce_gt_list = get_ground_truth(args.path_input_video_folder + '/' + video_file, args)
-                num_tp, num_fp, num_tn, num_fn = evaluate(bounce_list, bounce_gt_list, args)
+                num_tp, num_fp, num_tn, num_fn, FP_frames, FN_frames = evaluate(bounce_list, bounce_gt_list, args)
                 sum_tp += num_tp
                 sum_fp += num_fp
                 sum_tn += num_tn
@@ -216,13 +227,15 @@ def main(args):
                     f1_score = 2 * (precision * recall) / (precision + recall)
 
                 # Append the results to the list
-                results.append([video_file, num_tp, num_fp, num_tn, num_fn, precision, recall, f1_score])
+                FP_frames_str = '; '.join(map(str, FP_frames))
+                FN_frames_str = '; '.join(map(str, FN_frames))
+                results.append([video_file, num_tp, num_fp, num_tn, num_fn, precision, recall, f1_score, FP_frames_str, FN_frames_str])
     if len(results) == 0:
         print('Video file list {} could not be read or had no entries'.format(args.file_input_video_list))
         return
 
     # Create a DataFrame from the results list
-    df = pd.DataFrame(results, columns=['video_filename', 'tp', 'fp', 'tn', 'fn', 'precision', 'recall', 'f1_score'])
+    df = pd.DataFrame(results, columns=['video_filename', 'tp', 'fp', 'tn', 'fn', 'precision', 'recall', 'f1_score', 'FP_frames', 'FN_frames'])
 
     # Calculate the overall precision, recall, and F1 score
     if sum_tp + sum_fp == 0:
@@ -239,7 +252,7 @@ def main(args):
         overall_f1_score = 2 * (overall_precision * overall_recall) / (overall_precision + overall_recall)
 
     # Append the overall results to the DataFrame
-    df = df.append({'video_filename': 'Overall', 'tp': sum_tp, 'fp': sum_fp, 'tn': sum_tn, 'fn': sum_fn, 'precision': overall_precision, 'recall': overall_recall, 'f1_score': overall_f1_score}, ignore_index=True)
+    df = df.append({'video_filename': 'Overall', 'tp': sum_tp, 'fp': sum_fp, 'tn': sum_tn, 'fn': sum_fn, 'precision': overall_precision, 'recall': overall_recall, 'f1_score': overall_f1_score, 'FP_frames': 'n/a', 'FN_frames': 'n/a'},  ignore_index=True)
 
     # Print the overall results
     print('Overall results:')
@@ -257,7 +270,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--path_ball_track_model', type=str, help='path to pretrained model for ball detection')
     parser.add_argument('--path_bounce_model', type=str, help='path to pretrained model for bounce detection')
-    parser.add_argument('--path_input_video_folder', type=str, help='path to folder containing input videos')
+    parser.add_argument('--path_court_model', type=str, help='path to pretrained model for court detection')
     parser.add_argument('--file_input_video_list', type=str, help='list file of input videos')
     parser.add_argument('--path_output_folder', type=str, help='path to output folder')
     parser.add_argument('--param_file', type=str, help='INI-style file containing parameters for the pipeline')

@@ -136,8 +136,8 @@ class BallDetector:
 
         if self.debug_mode:
             # blend the feature map with the heatmap for debugging
-            dbg_heatmap = cv2.applyColorMap(feature_map, cv2.COLORMAP_CIVIDIS)
-            dbg_map = cv2.addWeighted(original_frame, 0.25, dbg_heatmap, 0.75, 0)
+            dbg_heatmap = cv2.applyColorMap(feature_map, cv2.COLORMAP_INFERNO)
+            dbg_map = cv2.addWeighted(original_frame, 0.50, dbg_heatmap, 0.50, 0)
 
         x, y = None, None
         if circles is not None:

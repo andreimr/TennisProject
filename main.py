@@ -6,6 +6,7 @@ from bounce_detector import BounceDetector
 from person_detector import PersonDetector
 from ball_detector import BallDetector
 from utils import scene_detect
+from homography import is_pt_inside_court
 import argparse
 import torch
 
@@ -44,11 +45,16 @@ def main(frames, scenes, bounces, ball_track, homography_matrices, kps_court, pe
         draw_trace: whether to draw ball trace
         trace: the length of ball trace
     :return
-        imgs_res: list of resulting images
+        imgs_res: list of resulting images, 
+        filtered_bounces: set of bounces filtered by this algorithm
     """
     imgs_res = []
     width_minimap = 166
     height_minimap = 350
+
+    # create empty set for filtered bounces
+    filtered_bounces = set()
+
     is_track = [x is not None for x in homography_matrices] 
     for num_scene in range(len(scenes)):
         sum_track = sum(is_track[scenes[num_scene][0]:scenes[num_scene][1]])
@@ -91,13 +97,20 @@ def main(frames, scenes, bounces, ball_track, homography_matrices, kps_court, pe
 
                 height, width, _ = img_res.shape
 
-                # draw bounce in minimap
+                # draw bounce in minimap if bounce is detected inside the court.
                 if i in bounces and inv_mat is not None:
                     ball_point = ball_track[i]
                     ball_point = np.array(ball_point, dtype=np.float32).reshape(1, 1, 2)
                     ball_point = cv2.perspectiveTransform(ball_point, inv_mat)
-                    court_img = cv2.circle(court_img, (int(ball_point[0, 0, 0]), int(ball_point[0, 0, 1])),
-                                                       radius=0, color=(0, 255, 255), thickness=50)
+
+                    # MODIFICATION
+                    # check if the bounce is inside the court
+                    if is_pt_inside_court(ball_point[0, 0]):
+                        # draw bounce in the minimap
+                        court_img = cv2.circle(court_img, (int(ball_point[0, 0, 0]), int(ball_point[0, 0, 1])),
+                                                        radius=0, color=(0, 255, 255), thickness=50)
+                        # add this frame ID to the set of filtered bounces
+                        filtered_bounces.add(i)
 
                 minimap = court_img.copy()
 
@@ -122,7 +135,7 @@ def main(frames, scenes, bounces, ball_track, homography_matrices, kps_court, pe
 
         else:    
             imgs_res = imgs_res + frames[scenes[num_scene][0]:scenes[num_scene][1]] 
-    return imgs_res        
+    return imgs_res, filtered_bounces        
  
 def write(imgs_res, fps, path_output_video):
     height, width = imgs_res[0].shape[:2]
@@ -149,7 +162,7 @@ if __name__ == '__main__':
 
     print('ball detection')
     ball_detector = BallDetector(args.path_ball_track_model, device)
-    ball_track = ball_detector.infer_model(frames)
+    ball_track = ball_detector.infer_model(frames, video_file=args.path_input_video.split('/')[-1])
 
     print('court detection')
     court_detector = CourtDetectorNet(args.path_court_model, device)
@@ -165,10 +178,23 @@ if __name__ == '__main__':
     y_ball = [x[1] for x in ball_track]
     bounces = bounce_detector.predict(x_ball, y_ball)
 
-    imgs_res = main(frames, scenes, bounces, ball_track, homography_matrices, kps_court, persons_top, persons_bottom,
+    imgs_res, filtered_bounces = main(frames, scenes, bounces, ball_track, homography_matrices, kps_court, persons_top, persons_bottom,
                     draw_trace=True)
 
     write(imgs_res, fps, args.path_output_video)
+
+    # generate txt filename comprising the output video name with `_filtered_bounces.txt' as the suffix, in place of the video extension
+    txt_filename = args.path_output_video.split('.')[0] + '_filtered_bounces.txt'
+    
+    # write the labels to the txt file
+    with open(txt_filename, 'w') as f:
+        for i in range(len(frames)):
+            if i in filtered_bounces:
+                f.write('1\n')
+            else:
+                f.write('0\n')
+    print('Output video is saved as', args.path_output_video)
+    print('Labels are saved as', txt_filename)
 
 
 

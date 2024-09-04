@@ -38,5 +38,10 @@ def get_trans_matrix(points):
                 dist_max = dist_median
     return matrix_trans 
 
-
-
+# MODIFICATION
+def is_pt_inside_court(pt):
+    """
+    Check if the point is inside the court
+    """
+    contour = np.array([court_ref.baseline_top[0], court_ref.baseline_top[1], court_ref.baseline_bottom[1], court_ref.baseline_bottom[0]])
+    return cv2.pointPolygonTest(contour, pt, True) > 0
